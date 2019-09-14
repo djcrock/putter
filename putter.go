@@ -25,6 +25,7 @@ func main() {
 	wiki := flag.String("wiki", "index.html", "wiki file to serve as editable")
 	archive := flag.Bool("archive", true, "whether wiki edit history should be preserved in --archive-dir")
 	archiveDir := flag.String("archive-dir", "old", "directory in which edit history will be preserved")
+	archiveFormat := flag.String("archive-format", "2006-01-02-15-04-05.000.html", "format of archive filenames")
 	serveArchive := flag.Bool("serve-archive", true, "whether wiki edit history should be served over HTTP at --archive-path")
 	archivePath := flag.String("archive-path", "/old/", "path at which edit history will be served over HTTP")
 	compress := flag.Bool("compress", true, "whether a gzipped version of the wiki should also be saved")
@@ -37,7 +38,14 @@ func main() {
 
 	addr := ip.String() + ":" + strconv.Itoa(*port)
 
-	http.Handle("/", newServer(*wiki, *archiveDir, *archive, *compress))
+	s := newServer(
+		*wiki,
+		*archiveDir,
+		*archiveFormat,
+		*archive,
+		*compress,
+	)
+	http.Handle("/", s)
 	log.Printf("serving wiki \"%s\" at http://%s/", *wiki, addr)
 
 	if *archive && *serveArchive {
@@ -68,15 +76,20 @@ type Server struct {
 	etag           string       // ETag for the live wiki
 	fileName       string       // name of the wiki file
 	archiveDirName string       // name of the directory to archive to
+	archiveFormat  string       // format of archive filenames
 	isArchive      bool         // whether archiving should be performed
 	isCompress     bool         // whether compression is enabled
 }
 
 // newServer creates a new instance of Server, computing the initial ETag.
-func newServer(fileName, archiveDirName string, isArchive, isCompress bool) *Server {
+func newServer(
+	fileName, archiveDirName, archiveFormat string,
+	isArchive, isCompress bool,
+) *Server {
 	s := &Server{
 		fileName:       fileName,
 		archiveDirName: archiveDirName,
+		archiveFormat:  archiveFormat,
 		isArchive:      isArchive,
 		isCompress:     isArchive,
 	}
@@ -274,7 +287,7 @@ func (s *Server) archiveWiki() (err error) {
 	defer src.Close()
 
 	t := time.Now().UTC()
-	filename := s.archiveDirName + t.Format("/2006-01-02-15-04-05.000.html")
+	filename := s.archiveDirName + "/" + t.Format(s.archiveFormat)
 	dst, err := os.Create(filename)
 	if err != nil {
 		return
