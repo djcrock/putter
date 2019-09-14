@@ -51,6 +51,7 @@ func main() {
 	if *archive && *serveArchive {
 		path := fixPath(*archivePath)
 		dir := http.FileServer(http.Dir(*archiveDir))
+		dir = whitelistMethods(dir, http.MethodGet, http.MethodHead)
 		http.Handle(path, http.StripPrefix(path, dir))
 		log.Printf("serving archive \"%s\" at http://%s%s", *archiveDir, addr, path)
 	}
@@ -68,6 +69,23 @@ func fixPath(p string) string {
 	}
 
 	return p
+}
+
+// whitelistMethods decorates an http.Handler by only allowing certain methods
+func whitelistMethods(h http.Handler, methods ...string) http.Handler {
+	allow := make(map[string]bool)
+	for _, method := range methods {
+		allow[method] = true
+	}
+
+	handlerFunc := func(w http.ResponseWriter, r *http.Request) {
+		if allow[r.Method] {
+			h.ServeHTTP(w, r)
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+
+	return http.HandlerFunc(handlerFunc)
 }
 
 // Server for providing safe concurrent reads and writes to a TiddlyWiki
