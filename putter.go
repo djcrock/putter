@@ -6,20 +6,60 @@ import (
 	"compress/gzip"
 	"crypto/md5"
 	"encoding/hex"
+	"flag"
 	"hash"
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 )
 
 func main() {
-	http.Handle("/", newServer("index.html", "old"))
-	http.Handle("/old/", http.StripPrefix("/old/", http.FileServer(http.Dir("old"))))
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	bind := flag.String("bind", "127.0.0.1", "interface to which the server will bind")
+	port := flag.Int("port", 8080, "port on which the server will listen")
+	wiki := flag.String("wiki", "index.html", "wiki file to serve as editable")
+	archive := flag.Bool("archive", true, "whether wiki edit history should be preserved in --archive-dir")
+	archiveDir := flag.String("archive-dir", "old", "directory in which edit history will be preserved")
+	serveArchive := flag.Bool("serve-archive", true, "whether wiki edit history should be served over HTTP at --archive-path")
+	archivePath := flag.String("archive-path", "/old/", "path at which edit history will be served over HTTP")
+	compress := flag.Bool("compress", true, "whether a gzipped version of the wiki should also be saved")
+	flag.Parse()
+
+	ip := net.ParseIP(*bind)
+	if ip == nil {
+		log.Fatal("invalid IP address provided to --bind")
+	}
+
+	addr := ip.String() + ":" + strconv.Itoa(*port)
+
+	http.Handle("/", newServer(*wiki, *archiveDir, *archive, *compress))
+	log.Printf("serving wiki \"%s\" at http://%s/", *wiki, addr)
+
+	if *archive && *serveArchive {
+		path := fixPath(*archivePath)
+		dir := http.FileServer(http.Dir(*archiveDir))
+		http.Handle(path, http.StripPrefix(path, dir))
+		log.Printf("serving archive \"%s\" at http://%s%s", *archiveDir, addr, path)
+	}
+
+	log.Fatal(http.ListenAndServe(addr, nil))
+}
+
+// fixPath ensures that the given string begins and ends with '/'
+func fixPath(p string) string {
+	if p[0] != '/' {
+		p = "/" + p
+	}
+	if p[len(p)-1] != '/' {
+		p = p + "/"
+	}
+
+	return p
 }
 
 // Server for providing safe concurrent reads and writes to a TiddlyWiki
@@ -28,11 +68,18 @@ type Server struct {
 	etag           string       // ETag for the live wiki
 	fileName       string       // name of the wiki file
 	archiveDirName string       // name of the directory to archive to
+	isArchive      bool         // whether archiving should be performed
+	isCompress     bool         // whether compression is enabled
 }
 
 // newServer creates a new instance of Server, computing the initial ETag.
-func newServer(fileName, archiveDirName string) *Server {
-	s := &Server{fileName: fileName, archiveDirName: archiveDirName}
+func newServer(fileName, archiveDirName string, isArchive, isCompress bool) *Server {
+	s := &Server{
+		fileName:       fileName,
+		archiveDirName: archiveDirName,
+		isArchive:      isArchive,
+		isCompress:     isArchive,
+	}
 	f, err := os.Open(s.fileName)
 	if err != nil {
 		log.Fatal(err)
@@ -182,6 +229,9 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 
 // compressWiki creates a compressed version of the wiki.
 func (s *Server) compressWiki() (err error) {
+	if !s.isCompress {
+		return
+	}
 	log.Println("compressing wiki...")
 	src, err := os.Open(s.fileName)
 	if err != nil {
@@ -212,6 +262,9 @@ func (s *Server) compressWiki() (err error) {
 
 // archiveWiki copies the live version of the wiki into the archive directory.
 func (s *Server) archiveWiki() (err error) {
+	if !s.isArchive {
+		return
+	}
 	os.Mkdir(s.archiveDirName, 755)
 
 	src, err := os.Open(s.fileName)
