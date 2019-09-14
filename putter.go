@@ -15,8 +15,22 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+)
+
+const (
+	headerAcceptEncoding  = "Accept-Encoding"
+	headerContentEncoding = "Content-Encoding"
+	headerContentLength   = "Content-Length"
+	headerDav             = "Dav"
+	headerEtag            = "ETag"
+	headerIfMatch         = "If-Match"
+
+	encodingGzip = "gzip"
+
+	extensionGzip = ".gz"
 )
 
 func main() {
@@ -160,14 +174,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHead(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	w.Header().Set("ETag", s.etag)
+	w.Header().Set(headerEtag, s.etag)
 	w.WriteHeader(http.StatusOK)
 }
 
 // handleOptions responds to an OPTIONS request to signal to TiddlyWiki that
 // the server accepts PUT requests. This enables the PUT saver.
 func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Dav", "putter")
+	w.Header().Set(headerDav, "putter")
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -176,7 +190,13 @@ func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	etag := s.etag
-	f, err := os.Open(s.fileName)
+	acceptEncoding := r.Header.Get(headerAcceptEncoding)
+	extension := ""
+	if s.isCompress && strings.Contains(acceptEncoding, encodingGzip) {
+		extension = extensionGzip
+		w.Header().Set(headerContentEncoding, encodingGzip)
+	}
+	f, err := os.Open(s.fileName + extension)
 	if err != nil {
 		log.Printf("failed to open wiki file to serve: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -192,7 +212,9 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	// Now that we have the ETag and file handle, nothing can change under us
 	s.mu.RUnlock()
 
-	w.Header().Set("ETag", etag)
+	// http.ServeContent won't automatically add this if Content-Encoding is set
+	w.Header().Set(headerContentLength, strconv.FormatInt(fileInfo.Size(), 10))
+	w.Header().Set(headerEtag, etag)
 	http.ServeContent(w, r, s.fileName, fileInfo.ModTime(), f)
 }
 
@@ -228,7 +250,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	etag := r.Header.Get("If-Match")
+	etag := r.Header.Get(headerIfMatch)
 	if etag != "" && etag != s.etag {
 		log.Printf("conflicting ETag (client : %s, server : %s)", etag, s.etag)
 		w.WriteHeader(http.StatusPreconditionFailed)
@@ -257,7 +279,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.setEtagFromHash(hash)
-	w.Header().Set("ETag", s.etag)
+	w.Header().Set(headerEtag, s.etag)
 	w.WriteHeader(http.StatusOK)
 
 	log.Println("wiki saved successfully")
@@ -275,7 +297,7 @@ func (s *Server) compressWiki() (err error) {
 	}
 	defer src.Close()
 
-	dst, err := os.Create(s.fileName + ".gz")
+	dst, err := os.Create(s.fileName + extensionGzip)
 	if err != nil {
 		return
 	}
