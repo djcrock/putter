@@ -3,44 +3,115 @@
 package main
 
 import (
+	"crypto/md5"
+	"encoding/hex"
+	"hash"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 )
 
 func main() {
-	fileServer := http.FileServer(http.Dir("."))
-	handle := func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			fileServer.ServeHTTP(w, r)
-		case http.MethodOptions:
-			handleOptions(w, r)
-		case http.MethodPut:
-			handlePut(w, r)
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-		}
+	http.Handle("/", newServer("index.html", "old"))
+	http.Handle("/old/", http.StripPrefix("/old/", http.FileServer(http.Dir("old"))))
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+// Server for providing safe concurrent reads and writes to a TiddlyWiki
+type Server struct {
+	mu             sync.RWMutex // protects the following
+	etag           string       // ETag for the live wiki
+	fileName       string       // name of the wiki file
+	archiveDirName string       // name of the directory to archive to
+}
+
+// newServer creates a new instance of Server with the provided Hash.
+// The wiki's initial ETag is computed.
+func newServer(fileName, archiveDirName string) *Server {
+	s := &Server{fileName: fileName, archiveDirName: archiveDirName}
+	f, err := os.Open(s.fileName)
+	if err != nil {
+		log.Fatalf("failed to initialize server: %v", err)
+	}
+	defer f.Close()
+
+	hash := md5.New()
+	_, err = io.Copy(hash, f)
+	if err != nil {
+		log.Fatalf("failed to initialize server: %v", err)
 	}
 
-	http.HandleFunc("/", handle)
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	s.setEtagFromHash(hash)
+
+	return s
+}
+
+// ServeHTTP handles all requests for the live wiki
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodHead:
+		s.handleHead(w, r)
+	case http.MethodOptions:
+		s.handleOptions(w, r)
+	case http.MethodGet:
+		s.handleGet(w, r)
+	case http.MethodPut:
+		s.handlePut(w, r)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// handleHead responds to a HEAD request by responding with ETag information.
+// This allows the PUT saver to get an initial ETag value, since it doesn't have
+// access to the value from the initial GET request.
+func (s *Server) handleHead(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	w.Header().Set("ETag", s.etag)
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleOptions responds to an OPTIONS request to signal to TiddlyWiki that
 // the server accepts PUT requests. This enables the PUT saver.
-func handleOptions(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Dav", "putter")
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleGet responds to a GET request by serving the wiki.
+// A separate handler is used (vs. http.FileServer) to support ETags.
+func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	etag := s.etag
+	f, err := os.Open(s.fileName)
+	if err != nil {
+		log.Printf("failed to open wiki file to serve: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+	fileInfo, err := f.Stat()
+	if err != nil {
+		log.Printf("failed to stat wiki file to serve: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	// Now that we have the ETag and file handle, nothing can change under us
+	s.mu.RUnlock()
+
+	w.Header().Set("ETag", etag)
+	http.ServeContent(w, r, s.fileName, fileInfo.ModTime(), f)
+}
+
 // handlePut receives a new version of the wiki, archives the live version,
 // and replaces it with the uploaded version.
-func handlePut(w http.ResponseWriter, r *http.Request) {
-	log.Println("Receiving TiddlyWiki PUT request...")
+func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
+	log.Println("receiving PUT request...")
 	f, err := ioutil.TempFile(os.TempDir(), "tiddlywiki-upload-*.html")
 	if err != nil {
 		log.Printf("failed to open temporary file for upload: %v", err)
@@ -50,7 +121,8 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
 	defer os.Remove(f.Name())
 	defer f.Close()
 
-	written, err := io.Copy(f, r.Body)
+	hash := md5.New()
+	written, err := io.Copy(io.MultiWriter(f, hash), r.Body)
 	if err != nil {
 		log.Printf("failed to save request body: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -65,34 +137,49 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = archiveWiki()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	etag := r.Header.Get("If-Match")
+	if etag != "" && etag != s.etag {
+		log.Printf("conflicting ETag (client : %s, server : %s)", etag, s.etag)
+		w.WriteHeader(http.StatusPreconditionFailed)
+		return
+	}
+
+	err = s.archiveWiki()
 	if err != nil {
 		log.Printf("failed to archive wiki: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	err = os.Rename(f.Name(), "index.html")
+	err = os.Rename(f.Name(), s.fileName)
 	if err != nil {
 		log.Printf("failed replace live wiki: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	log.Println("Updated TiddlyWiki saved successfully")
+
+	s.setEtagFromHash(hash)
+	w.Header().Set("ETag", s.etag)
+	w.WriteHeader(http.StatusOK)
+
+	log.Println("wiki saved successfully")
 }
 
 // archiveWiki copies the live version of the wiki into the archive directory.
-func archiveWiki() (err error) {
-	os.Mkdir("old", 755)
+func (s *Server) archiveWiki() (err error) {
+	os.Mkdir(s.archiveDirName, 755)
 
-	src, err := os.Open("index.html")
+	src, err := os.Open(s.fileName)
 	if err != nil {
 		return
 	}
 	defer src.Close()
 
 	t := time.Now().UTC()
-	filename := "old/" + t.Format("2006-01-02-15-04-05.000") + ".html"
+	filename := s.archiveDirName + t.Format("/2006-01-02-15-04-05.000.html")
 	dst, err := os.Create(filename)
 	if err != nil {
 		return
@@ -103,4 +190,9 @@ func archiveWiki() (err error) {
 	log.Printf("archived wiki to %s", dst.Name())
 
 	return
+}
+
+// setEtagFromHash gets the sum of the hash and sets it as the current ETag
+func (s *Server) setEtagFromHash(h hash.Hash) {
+	s.etag = "\"" + hex.EncodeToString(h.Sum(nil)) + "\""
 }
