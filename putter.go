@@ -117,6 +117,10 @@ func newServer(
 
 // ServeHTTP handles all requests for the live wiki
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	switch r.Method {
 	case http.MethodHead:
 		s.handleHead(w, r)
