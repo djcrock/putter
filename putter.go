@@ -81,6 +81,7 @@ func whitelistMethods(h http.Handler, methods ...string) http.Handler {
 	handlerFunc := func(w http.ResponseWriter, r *http.Request) {
 		if allow[r.Method] {
 			h.ServeHTTP(w, r)
+			return
 		}
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
