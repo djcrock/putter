@@ -1,0 +1,14 @@
+---
+kind: pipeline
+type: docker
+name: build
+
+steps:
+    - name: vet
+    image: golang:1.13-alpine
+    commands:
+      - go vet
+  - name: build
+    image: golang:1.13-alpine
+    commands:
+      - go build
