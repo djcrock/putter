@@ -22,7 +22,7 @@ import (
 func main() {
 	bind := flag.String("bind", "127.0.0.1", "interface to which the server will bind")
 	port := flag.Int("port", 8080, "port on which the server will listen")
-	wiki := flag.String("wiki", "index.html", "wiki file to serve as editable")
+	wiki := flag.String("wiki", "index.html", "wiki file to serve")
 	archive := flag.Bool("archive", true, "whether wiki edit history should be preserved in --archive-dir")
 	archiveDir := flag.String("archive-dir", "old", "directory in which edit history will be preserved")
 	archiveFormat := flag.String("archive-format", "2006-01-02-15-04-05.000.html", "format of archive filenames")
