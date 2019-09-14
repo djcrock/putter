@@ -3,6 +3,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"crypto/md5"
 	"encoding/hex"
 	"hash"
@@ -29,23 +30,27 @@ type Server struct {
 	archiveDirName string       // name of the directory to archive to
 }
 
-// newServer creates a new instance of Server with the provided Hash.
-// The wiki's initial ETag is computed.
+// newServer creates a new instance of Server, computing the initial ETag.
 func newServer(fileName, archiveDirName string) *Server {
 	s := &Server{fileName: fileName, archiveDirName: archiveDirName}
 	f, err := os.Open(s.fileName)
 	if err != nil {
-		log.Fatalf("failed to initialize server: %v", err)
+		log.Fatal(err)
 	}
 	defer f.Close()
 
 	hash := md5.New()
 	_, err = io.Copy(hash, f)
 	if err != nil {
-		log.Fatalf("failed to initialize server: %v", err)
+		log.Fatal(err)
 	}
 
 	s.setEtagFromHash(hash)
+
+	err = s.compressWiki()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	return s
 }
@@ -161,11 +166,48 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	err = s.compressWiki()
+	if err != nil {
+		log.Printf("failed compress wiki: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
 	s.setEtagFromHash(hash)
 	w.Header().Set("ETag", s.etag)
 	w.WriteHeader(http.StatusOK)
 
 	log.Println("wiki saved successfully")
+}
+
+// compressWiki creates a compressed version of the wiki.
+func (s *Server) compressWiki() (err error) {
+	log.Println("compressing wiki...")
+	src, err := os.Open(s.fileName)
+	if err != nil {
+		return
+	}
+	defer src.Close()
+
+	dst, err := os.Create(s.fileName + ".gz")
+	if err != nil {
+		return
+	}
+	defer dst.Close()
+
+	dstz, err := gzip.NewWriterLevel(dst, gzip.BestCompression)
+	if err != nil {
+		return
+	}
+	defer dstz.Close()
+
+	_, err = io.Copy(dstz, src)
+	if err != nil {
+		return
+	}
+	log.Println("wiki compressed")
+
+	return
 }
 
 // archiveWiki copies the live version of the wiki into the archive directory.
