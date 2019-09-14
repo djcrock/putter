@@ -42,7 +42,7 @@ func main() {
 	archiveFormat := flag.String("archive-format", "2006-01-02-15-04-05.000.html", "format of archive filenames")
 	serveArchive := flag.Bool("serve-archive", true, "whether wiki edit history should be served over HTTP at --archive-path")
 	archivePath := flag.String("archive-path", "/old/", "path at which edit history will be served over HTTP")
-	compress := flag.Bool("compress", true, "whether a gzipped version of the wiki should also be saved")
+	compress := flag.Bool("compress", true, "whether a gzipped version of the wiki should also be served")
 	flag.Parse()
 
 	ip := net.ParseIP(*bind)
@@ -65,6 +65,8 @@ func main() {
 	if *archive && *serveArchive {
 		path := fixPath(*archivePath)
 		dir := http.FileServer(http.Dir(*archiveDir))
+		// TiddlyWiki sends an OPTIONS request that, unless blocked,
+		// will re-download the file and waste bandwidth.
 		dir = whitelistMethods(dir, http.MethodGet, http.MethodHead)
 		http.Handle(path, http.StripPrefix(path, dir))
 		log.Printf("serving archive \"%s\" at http://%s%s", *archiveDir, addr, path)
@@ -85,7 +87,7 @@ func fixPath(p string) string {
 	return p
 }
 
-// whitelistMethods decorates an http.Handler by only allowing certain methods
+// whitelistMethods decorates an http.Handler to only allow certain methods
 func whitelistMethods(h http.Handler, methods ...string) http.Handler {
 	allow := make(map[string]bool)
 	for _, method := range methods {
@@ -192,6 +194,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	etag := s.etag
 	acceptEncoding := r.Header.Get(headerAcceptEncoding)
 	extension := ""
+	// Not _technically_ the right way to check this, but...
 	if s.isCompress && strings.Contains(acceptEncoding, encodingGzip) {
 		extension = extensionGzip
 		w.Header().Set(headerContentEncoding, encodingGzip)
@@ -285,7 +288,8 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	log.Println("wiki saved successfully")
 }
 
-// compressWiki creates a compressed version of the wiki.
+// compressWiki saves a compressed version of the wiki. This allows compression
+// to happen once at time of write rather than every time the file is served.
 func (s *Server) compressWiki() (err error) {
 	if !s.isCompress {
 		return

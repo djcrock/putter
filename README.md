@@ -31,7 +31,7 @@ The following flags are available:
   - interface to which the server will bind
 - `--compress`=bool
   - default `true`
-  - whether a gzipped version of the wiki should also be saved
+  - whether a gzipped version of the wiki should also be served
 - `--port` int
   - default `8080`
   - port on which the server will listen
