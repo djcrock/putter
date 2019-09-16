@@ -274,6 +274,13 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	err = os.Chmod(s.fileName, 0644)
+	if err != nil {
+		log.Printf("failed make wiki readable: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
 	err = s.compressWiki()
 	if err != nil {
 		log.Printf("failed compress wiki: %v", err)
