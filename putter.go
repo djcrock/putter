@@ -126,7 +126,7 @@ func newServer(
 		archiveDirName: archiveDirName,
 		archiveFormat:  archiveFormat,
 		isArchive:      isArchive,
-		isCompress:     isArchive,
+		isCompress:     isCompress,
 	}
 	f, err := os.Open(s.fileName)
 	if err != nil {
