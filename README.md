@@ -6,7 +6,7 @@ Putter is a simple HTTP server for [TiddlyWiki](https://tiddlywiki.com/) that su
 
 When served via Putter, the default behavior of a TiddlyWiki's "save" functionality will be to send a `PUT` request, updating the version on the server. The `ETag` header is used to prevent conflicting saves from overwriting each other.
 
-Be default, Putter serves the `index.html` file from the current directory and archives the previous version of the wiki to `old/` whenever a new version is saved. This behavior is configurable via command line flags.
+By default, Putter serves the `index.html` file from the current directory and archives the previous version of the wiki to `old/` whenever a new version is saved. This behavior is configurable via command line flags.
 
 Note that the entire wiki is re-uploaded with each save. TiddlyWiki's [automatic saving feature](https://tiddlywiki.com/static/AutoSave.html) (`$:/config/AutoSave`) can be disabled to save bandwidth.
 
